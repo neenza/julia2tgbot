@@ -2,23 +2,33 @@ import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloud
 import { describe, it, expect } from 'vitest';
 import worker from '../src/index';
 
-// For now, you'll need to do something like this to get a correctly-typed
-// `Request` to pass to `worker.fetch()`.
-const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
-
-describe('Hello World worker', () => {
-	it('responds with Hello World! (unit style)', async () => {
-		const request = new IncomingRequest('http://example.com');
+// The env interface should be properly mocked for testing
+describe('Jules Bot worker', () => {
+	it('fails gracefully when env is missing', async () => {
+		const request = new Request('http://example.com', { method: 'POST', body: '{}' });
 		// Create an empty context to pass to `worker.fetch()`.
 		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, env, ctx);
+
+		const mockEnv = {
+			JULES_BOT_KV: {} // Mock KV
+		} as any;
+
+		const response = await worker.fetch(request, mockEnv, ctx);
 		// Wait for all `Promise`s passed to `ctx.waitUntil()` to settle before running test assertions
 		await waitOnExecutionContext(ctx);
-		expect(await response.text()).toMatchInlineSnapshot(`"Hello World!"`);
+		expect(await response.text()).toMatchInlineSnapshot(`"TELEGRAM_BOT_TOKEN is not set"`);
 	});
 
-	it('responds with Hello World! (integration style)', async () => {
-		const response = await SELF.fetch('https://example.com');
-		expect(await response.text()).toMatchInlineSnapshot(`"Hello World!"`);
+	it('fails gracefully when JULES_API_KEY is missing', async () => {
+		const request = new Request('http://example.com', { method: 'POST', body: '{}' });
+		const ctx = createExecutionContext();
+		const mockEnv = {
+			TELEGRAM_BOT_TOKEN: 'mock_token',
+			JULES_BOT_KV: {} // Mock KV
+		} as any;
+
+		const response = await worker.fetch(request, mockEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(await response.text()).toMatchInlineSnapshot(`"JULES_API_KEY is not set"`);
 	});
 });
