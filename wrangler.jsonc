@@ -4,5 +4,17 @@
   "compatibility_date": "2024-03-01",
   "observability": {
     "enabled": true
+  },
+  "kv_namespaces": [
+    {
+      "binding": "JULES_BOT_KV",
+      "id": "mock-id-for-dev",
+      "preview_id": "mock-preview-id-for-dev"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
   }
 }

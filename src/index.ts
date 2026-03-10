@@ -3,6 +3,7 @@ import { Bot, webhookCallback } from 'grammy';
 export interface Env {
 	TELEGRAM_BOT_TOKEN: string;
 	JULES_API_KEY: string;
+	JULES_BOT_KV: KVNamespace;
 }
 
 const JULES_API_BASE_URL = 'https://jules.googleapis.com/v1alpha';
@@ -39,70 +40,82 @@ function escapeMarkdownV2(text: string): string {
  */
 function formatCodeBlock(text: string, language: string = ''): string {
 	if (!text) return '';
-	// Avoid escaping characters inside code block, but make sure the block syntax is clean.
-	return `\`\`\`${language}\n${text}\n\`\`\``;
+	// In MarkdownV2 code blocks, backticks and backslashes must be escaped
+	const escapedText = text.replace(/[`\\]/g, '\\$&');
+	return `\`\`\`${language}\n${escapedText}\n\`\`\``;
 }
 
-async function pollSessionActivities(sessionId: string, chatId: number, bot: Bot, env: Env) {
-	const maxPolls = 15;
-	let seenActivityIds = new Set<string>();
-
+async function pollAllSessions(env: Env, bot: Bot) {
 	try {
-		const initialData = await fetchJules(`/sessions/${sessionId}/activities?pageSize=50`, env.JULES_API_KEY);
-		if (initialData.activities) {
-			for (const activity of initialData.activities) {
-				seenActivityIds.add(activity.id);
-			}
-		}
-	} catch (e) {
-		console.error("Failed to fetch initial activities for polling:", e);
-		return;
-	}
+		// List all active sessions from KV
+		const list = await env.JULES_BOT_KV.list({ prefix: 'session:' });
 
-	for (let i = 0; i < maxPolls; i++) {
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		for (const key of list.keys) {
+			const sessionId = key.name.replace('session:', '');
+			const sessionDataStr = await env.JULES_BOT_KV.get(key.name);
+			if (!sessionDataStr) continue;
 
-		try {
-			const data = await fetchJules(`/sessions/${sessionId}/activities?pageSize=50`, env.JULES_API_KEY);
-			if (data.activities) {
-				for (const activity of data.activities) {
-					if (!seenActivityIds.has(activity.id)) {
-						seenActivityIds.add(activity.id);
+			const sessionData = JSON.parse(sessionDataStr);
+			const chatId = sessionData.chatId;
+			let seenActivityIds = new Set<string>(sessionData.seenActivityIds || []);
+			let isCompleted = false;
+			let newActivitiesFound = false;
 
-						if (activity.planGenerated) {
-							const msg = escapeMarkdownV2(`Session ${sessionId}: Plan generated and awaiting approval!\nUse /approve_plan ${sessionId} to proceed.`);
-							await bot.api.sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
-						} else if (activity.sessionCompleted) {
-							const msg = escapeMarkdownV2(`Session ${sessionId}: Completed!`);
-							await bot.api.sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
-							return;
-						} else if (activity.progressUpdated) {
-							if (activity.progressUpdated.title && activity.progressUpdated.title !== 'Ran bash command') {
-								const msg = escapeMarkdownV2(`Session ${sessionId} Update: ${activity.progressUpdated.title}`);
+			try {
+				const data = await fetchJules(`/sessions/${sessionId}/activities?pageSize=50`, env.JULES_API_KEY);
+				if (data.activities) {
+					// We iterate from oldest to newest to send messages in order if possible
+					const activities = [...data.activities].reverse();
+
+					for (const activity of activities) {
+						if (!seenActivityIds.has(activity.id)) {
+							seenActivityIds.add(activity.id);
+							newActivitiesFound = true;
+
+							if (activity.planGenerated) {
+								const msg = escapeMarkdownV2(`Session ${sessionId}: Plan generated and awaiting approval!\nUse /approve_plan ${sessionId} to proceed.`);
 								await bot.api.sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
-							}
-						} else if (activity.artifacts && activity.artifacts.length > 0) {
-							// Check for code diffs
-							for (const artifact of activity.artifacts) {
-								if (artifact.changeSet && artifact.changeSet.gitPatch) {
-									const patch = artifact.changeSet.gitPatch.unidiffPatch;
-									if (patch) {
-										const patchMsg = `*Diff for ${escapeMarkdownV2(sessionId)}:*\n` + formatCodeBlock(patch, 'diff');
-										await bot.api.sendMessage(chatId, patchMsg, { parse_mode: 'MarkdownV2' });
+							} else if (activity.sessionCompleted) {
+								const msg = escapeMarkdownV2(`Session ${sessionId}: Completed!`);
+								await bot.api.sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+								isCompleted = true;
+							} else if (activity.progressUpdated) {
+								if (activity.progressUpdated.title && activity.progressUpdated.title !== 'Ran bash command') {
+									const msg = escapeMarkdownV2(`Session ${sessionId} Update: ${activity.progressUpdated.title}`);
+									await bot.api.sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+								}
+							} else if (activity.artifacts && activity.artifacts.length > 0) {
+								for (const artifact of activity.artifacts) {
+									if (artifact.changeSet && artifact.changeSet.gitPatch) {
+										const patch = artifact.changeSet.gitPatch.unidiffPatch;
+										if (patch) {
+											const patchMsg = `*Diff for ${escapeMarkdownV2(sessionId)}:*\n` + formatCodeBlock(patch, 'diff');
+											await bot.api.sendMessage(chatId, patchMsg, { parse_mode: 'MarkdownV2' });
+										}
 									}
 								}
 							}
 						}
 					}
 				}
+			} catch (err: any) {
+				console.error(`Polling error for session ${sessionId}: ${err.message}`);
 			}
-		} catch (err: any) {
-			console.error(`Polling error for session ${sessionId}: ${err.message}`);
-		}
-	}
 
-	const stopMsg = escapeMarkdownV2(`Stopped live polling for Session ${sessionId} due to timeout. Use /activities ${sessionId} to check manually.`);
-	await bot.api.sendMessage(chatId, stopMsg, { parse_mode: 'MarkdownV2' });
+			if (isCompleted) {
+				// Remove completed sessions from KV
+				await env.JULES_BOT_KV.delete(key.name);
+			} else if (newActivitiesFound) {
+				// Update KV with new seenActivityIds
+				await env.JULES_BOT_KV.put(key.name, JSON.stringify({
+					chatId: chatId,
+					seenActivityIds: Array.from(seenActivityIds)
+				}));
+			}
+		}
+	} catch (error) {
+		console.error('Error during global polling loop:', error);
+	}
 }
 
 export default {
@@ -177,7 +190,11 @@ Available commands:
 				await botCtx.reply(msg, { parse_mode: 'MarkdownV2' });
 
 				if (botCtx.chat) {
-					ctx.waitUntil(pollSessionActivities(sessionId, botCtx.chat.id, bot, env));
+					// Store the active session in KV for background polling
+					await env.JULES_BOT_KV.put(`session:${sessionId}`, JSON.stringify({
+						chatId: botCtx.chat.id,
+						seenActivityIds: []
+					}));
 				}
 			} catch (err: any) {
 				return botCtx.reply(escapeMarkdownV2(`Error creating session: ${err.message}`), { parse_mode: 'MarkdownV2' });
@@ -262,10 +279,6 @@ Available commands:
 					body: JSON.stringify({ prompt: message })
 				});
 				await botCtx.reply(escapeMarkdownV2('Message sent to agent.'), { parse_mode: 'MarkdownV2' });
-
-				if (botCtx.chat) {
-					ctx.waitUntil(pollSessionActivities(sessionId, botCtx.chat.id, bot, env));
-				}
 			} catch (err: any) {
 				return botCtx.reply(escapeMarkdownV2(`Error sending message: ${err.message}`), { parse_mode: 'MarkdownV2' });
 			}
@@ -281,16 +294,26 @@ Available commands:
 					body: JSON.stringify({})
 				});
 				await botCtx.reply(escapeMarkdownV2('Plan approved successfully.'), { parse_mode: 'MarkdownV2' });
-
-				if (botCtx.chat) {
-					ctx.waitUntil(pollSessionActivities(sessionId, botCtx.chat.id, bot, env));
-				}
 			} catch (err: any) {
 				return botCtx.reply(escapeMarkdownV2(`Error approving plan: ${err.message}`), { parse_mode: 'MarkdownV2' });
 			}
 		});
 
+		// Optional endpoint for manual trigger / CRON
+		const url = new URL(request.url);
+		if (url.pathname === '/poll_updates') {
+			await pollAllSessions(env, bot);
+			return new Response('Polling finished.');
+		}
+
 		const handler = webhookCallback(bot, 'cloudflare-mod');
 		return handler(request);
 	},
+
+	async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+		if (env.TELEGRAM_BOT_TOKEN && env.JULES_API_KEY) {
+			const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
+			ctx.waitUntil(pollAllSessions(env, bot));
+		}
+	}
 };

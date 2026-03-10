@@ -9,7 +9,9 @@ describe('Jules Bot worker', () => {
 		// Create an empty context to pass to `worker.fetch()`.
 		const ctx = createExecutionContext();
 
-		const mockEnv = {} as any;
+		const mockEnv = {
+			JULES_BOT_KV: {} // Mock KV
+		} as any;
 
 		const response = await worker.fetch(request, mockEnv, ctx);
 		// Wait for all `Promise`s passed to `ctx.waitUntil()` to settle before running test assertions
@@ -20,7 +22,10 @@ describe('Jules Bot worker', () => {
 	it('fails gracefully when JULES_API_KEY is missing', async () => {
 		const request = new Request('http://example.com', { method: 'POST', body: '{}' });
 		const ctx = createExecutionContext();
-		const mockEnv = { TELEGRAM_BOT_TOKEN: 'mock_token' } as any;
+		const mockEnv = {
+			TELEGRAM_BOT_TOKEN: 'mock_token',
+			JULES_BOT_KV: {} // Mock KV
+		} as any;
 
 		const response = await worker.fetch(request, mockEnv, ctx);
 		await waitOnExecutionContext(ctx);
