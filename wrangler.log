@@ -1,0 +1,31 @@
+
+ ⛅️ wrangler 3.114.17 (update available 4.71.0)
+-----------------------------------------------
+
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mThe version of Wrangler you are using is now out-of-date.[0m
+
+  Please update to the latest version to prevent critical errors.
+  Run `npm install --save-dev wrangler@4` to update to the latest version.
+  After installation, run Wrangler with `npx wrangler`.
+
+
+
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mBuild failed with 1 error:[0m
+
+  [31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mSyntax error "`"[0m
+
+      src/index.ts:81:24:
+  [37m      81 │         const sourceName = \[32m[37m`sources/\${sourceId}\`;
+           ╵                             [32m^[0m
+
+
+
+
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mUnrecognized target environment "es2024"[0m [tsconfig.json]
+
+    tsconfig.json:6:12:
+[37m      6 │     "target": [32m"es2024"[37m,
+        ╵               [32m~~~~~~~~[0m
+
+
+🪵  Logs were written to "/home/jules/.config/.wrangler/logs/wrangler-2026-03-10_09-59-40_633.log"
